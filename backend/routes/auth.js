@@ -1,58 +1,46 @@
-// backend/routes/auth.js
 const express = require('express');
-const fetch = require('node-fetch');
-const { google } = require('googleapis');
-const router = express.Router();
+const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const User = require('../models/User');
 
-const {
-  GOOGLE_CLIENT_ID,
-  GOOGLE_CLIENT_SECRET,
-  GOOGLE_OAUTH_CALLBACK,
-  JWT_SECRET
-} = process.env;
+const router = express.Router();
 
-const oauth2Client = new google.auth.OAuth2(
-  GOOGLE_CLIENT_ID,
-  GOOGLE_CLIENT_SECRET,
-  GOOGLE_OAUTH_CALLBACK
-);
+// Register
+router.post('/register', async (req, res) => {
+  try {
+    const { username, email, password } = req.body;
+    if (!username || !email || !password) return res.status(400).json({ error: 'All fields required' });
 
-const SCOPES = ['https://www.googleapis.com/auth/youtube.readonly', 'openid', 'email', 'profile'];
+    const existing = await User.findOne({ email });
+    if (existing) return res.status(400).json({ error: 'Email already exists' });
 
-router.get('/google', (req, res) => {
-  const state = req.query.state || '/';
-  const url = oauth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, state });
-  res.redirect(url);
+    const hashed = await bcrypt.hash(password, 10);
+    const user = new User({ username, email, password: hashed });
+    await user.save();
+
+    res.status(201).json({ message: 'User registered', userId: user._id });
+  } catch (err) {
+    console.error('Register error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
-router.get('/google/callback', async (req, res) => {
+// Login
+router.post('/login', async (req, res) => {
   try {
-    const { code, state } = req.query;
-    const { tokens } = await oauth2Client.getToken(code);
-    oauth2Client.setCredentials(tokens);
+    const { email, password } = req.body;
+    const user = await User.findOne({ email });
+    if (!user) return res.status(400).json({ error: 'Invalid credentials' });
 
-    // fetch user info
-    const oauth2 = google.oauth2({ auth: oauth2Client, version: 'v2' });
-    const userinfo = await oauth2.userinfo.get();
-    // userinfo.data contains email, id, name
+    const match = await bcrypt.compare(password, user.password);
+    if (!match) return res.status(400).json({ error: 'Invalid credentials' });
 
-    // Upsert user in DB (pseudo)
-    // const user = await upsertUser(userinfo.data);
-
-    const payload = { userId: userinfo.data.id, email: userinfo.data.email };
-    const jwtToken = jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
-
-    // store tokens metadata in DB with user for proof (refresh token may be required)
-    // saveOAuthTokens(user.id, { tokens, profile: userinfo.data });
-
-    // redirect back to front-end with token
-    res.redirect(`${process.env.FRONTEND_ORIGIN}/auth-success?token=${jwtToken}`);
+    const token = jwt.sign({ userId: user._id, email: user.email }, process.env.JWT_SECRET || 'devsecret', { expiresIn: '7d' });
+    res.json({ token });
   } catch (err) {
-    console.error('Google callback error', err);
-    res.status(500).send('Auth error');
+    console.error('Login error:', err);
+    res.status(500).json({ error: 'Server error' });
   }
 });
 
 module.exports = router;
-v
